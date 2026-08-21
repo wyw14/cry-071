@@ -1,0 +1,142 @@
+openapi: 3.0.3
+info:
+  title: 公共空间反馈处理追踪 API
+  version: 1.0.0
+  description: 面向提交者、处理人员、管理员与审计人员的离线可运行反馈服务。
+servers:
+  - url: http://localhost:8080/api/v1
+paths:
+  /feedback:
+    post:
+      summary: 提交公共空间反馈
+      operationId: submitFeedback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SubmitFeedback' }
+      responses:
+        '201': { description: 已生成受理编号与查询令牌 }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /feedback/query/{token}:
+    get:
+      summary: 使用提交者令牌查询进度
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: 已脱敏的反馈、公开时间线、回复和附件 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /feedback/{id}/transitions:
+    post:
+      summary: 变更反馈状态并追加不可修改时间线
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, to]
+              properties:
+                version: { type: integer, format: int64, minimum: 1 }
+                to: { $ref: '#/components/schemas/FeedbackStatus' }
+                reason: { type: string }
+      responses:
+        '200': { description: 状态已更新 }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /feedback/{id}/assignments:
+    post:
+      summary: 分派或转交反馈
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses: { '200': { description: 分派成功 }, '409': { $ref: '#/components/responses/Conflict' } }
+  /feedback/{id}/replies:
+    post:
+      summary: 添加公开回复或内部备注
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses: { '201': { description: 回复已创建 } }
+  /feedback/supplements:
+    post:
+      summary: 提交者补充材料
+      responses: { '201': { description: 补充材料已进入时间线 } }
+  /feedback/satisfaction:
+    post:
+      summary: 提交者确认满意度
+      responses: { '200': { description: 满意度已保存并按规则关闭反馈 } }
+  /admin/queue:
+    get:
+      summary: 管理处理队列
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 100 } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/FeedbackStatus' } }
+        - { name: sort, in: query, schema: { type: string, enum: [created_at, updated_at, due_at, priority] } }
+      responses: { '200': { description: 分页处理队列 } }
+  /admin/batch/assign:
+    post:
+      summary: 批量分派反馈
+      responses: { '200': { description: 返回逐条成功与失败结果 } }
+  /merges:
+    post:
+      summary: 合并相似反馈
+      responses: { '201': { description: 合并组已创建 } }
+  /announcements:
+    get: { summary: 查询已发布解决公告, responses: { '200': { description: 公告列表 } } }
+    post: { summary: 创建解决公告草稿, responses: { '201': { description: 公告草稿 } } }
+  /announcements/{id}/publish:
+    post:
+      summary: 发布解决公告并写入关联反馈时间线
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses: { '200': { description: 公告已发布 } }
+  /reports/trends:
+    get:
+      summary: 按区域与时间桶查询趋势
+      responses: { '200': { description: 趋势点列表 } }
+  /reports/quality:
+    get:
+      summary: 查询处理质量
+      responses: { '200': { description: 关闭率、超期和平均处理时长 } }
+components:
+  schemas:
+    SubmitFeedback:
+      type: object
+      required: [area_id, facility_category_id, subject_code, title, description, location]
+      properties:
+        area_id: { type: string }
+        facility_category_id: { type: string }
+        subject_code: { type: string }
+        priority: { type: string, enum: [low, normal, high, critical] }
+        title: { type: string, minLength: 5, maxLength: 120 }
+        description: { type: string, minLength: 10, maxLength: 4000 }
+        location: { type: string, maxLength: 300 }
+        anonymous: { type: boolean }
+        submitter_name: { type: string }
+        submitter_contact: { type: string }
+    FeedbackStatus:
+      type: string
+      enum: [pending_acceptance, needs_information, in_progress, pending_confirmation, closed, rejected]
+    Error:
+      type: object
+      required: [code, message, field_errors, request_id]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        field_errors: { type: array, items: { type: object } }
+        request_id: { type: string }
+  responses:
+    ValidationError:
+      description: 请求字段或业务状态不合法
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Unauthorized:
+      description: 查询令牌或身份无效
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Conflict:
+      description: 乐观版本或唯一键冲突
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }

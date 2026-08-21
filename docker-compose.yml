@@ -1,0 +1,44 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: feedback
+      POSTGRES_USER: feedback
+      POSTGRES_PASSWORD: feedback
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U feedback -d feedback"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+  migrate:
+    image: postgres:17-alpine
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      PGPASSWORD: feedback
+    volumes:
+      - ./migrations:/migrations:ro
+    command: ["sh", "-c", "psql -h postgres -U feedback -d feedback -v ON_ERROR_STOP=1 -f /migrations/001_init.sql -f /migrations/002_seed.sql"]
+  api:
+    build: .
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    environment:
+      APP_ENV: production
+      STORE_MODE: postgres
+      DATABASE_URL: postgres://feedback:feedback@postgres:5432/feedback?sslmode=disable
+      QUERY_TOKEN_PEPPER: local-compose-pepper-change-me
+      ATTACHMENT_ROOT: /app/var/attachments
+      ALLOWED_ORIGINS: http://localhost:8088
+    ports: ["8080:8080"]
+    volumes:
+      - attachments:/app/var/attachments
+  web:
+    build: ./web
+    depends_on: [api]
+    ports: ["8088:80"]
+volumes:
+  postgres-data:
+  attachments:
