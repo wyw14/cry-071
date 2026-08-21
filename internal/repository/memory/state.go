@@ -107,12 +107,16 @@ func (s *state) clone() *state {
 func cloneEvents(events []domain.TimelineEvent) []domain.TimelineEvent {
 	cloned := make([]domain.TimelineEvent, len(events))
 	for index, event := range events {
-		cloned[index] = event
-		if event.Details != nil {
-			cloned[index].Details = make(map[string]string, len(event.Details))
-			for key, value := range event.Details {
-				cloned[index].Details[key] = value
-			}
+		cloned[index] = domain.TimelineEvent{
+			ID:         event.ID,
+			FeedbackID: event.FeedbackID,
+			Sequence:   event.Sequence,
+			Kind:       event.Kind,
+			ActorID:    event.ActorID,
+			Visibility: event.Visibility,
+			Summary:    event.Summary,
+			Details:    event.Details,
+			OccurredAt: event.OccurredAt,
 		}
 	}
 	return cloned

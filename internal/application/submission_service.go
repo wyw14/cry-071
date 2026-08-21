@@ -193,6 +193,33 @@ type PublicFeedbackView struct {
 	Satisfaction *domain.Satisfaction   `json:"satisfaction,omitempty"`
 }
 
+func publicTimelineView(events []domain.TimelineEvent) []domain.TimelineEvent {
+	visibleCount := 0
+	for _, event := range events {
+		if event.Visibility == domain.VisibilityPublic {
+			visibleCount++
+		}
+	}
+	view := make([]domain.TimelineEvent, 0, visibleCount)
+	for _, event := range events {
+		if event.Visibility != domain.VisibilityPublic {
+			continue
+		}
+		view = append(view, domain.TimelineEvent{
+			ID:         event.ID,
+			FeedbackID: event.FeedbackID,
+			Sequence:   event.Sequence,
+			Kind:       event.Kind,
+			ActorID:    event.ActorID,
+			Visibility: event.Visibility,
+			Summary:    event.Summary,
+			Details:    event.Details,
+			OccurredAt: event.OccurredAt,
+		})
+	}
+	return view
+}
+
 func (s *SubmissionService) ViewByToken(ctx context.Context, plainToken string) (PublicFeedbackView, error) {
 	digest := s.deps.Tokens.Digest(strings.TrimSpace(plainToken))
 	feedbackID, err := s.deps.Repositories.ResolveToken(ctx, digest)
@@ -236,7 +263,7 @@ func (s *SubmissionService) ViewByToken(ctx context.Context, plainToken string) 
 		}
 	}
 	return PublicFeedbackView{
-		Feedback: redacted, Timeline: domain.PublicTimeline(timeline), Replies: publicReplies,
+		Feedback: redacted, Timeline: publicTimelineView(timeline), Replies: publicReplies,
 		Attachments: attachments, Satisfaction: satisfaction,
 	}, nil
 }
