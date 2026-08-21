@@ -67,38 +67,70 @@ func (r *repositoryView) Trend(ctx context.Context, areaID string, from, to time
 	}
 	groups := map[string]*trendAccumulator{}
 	for _, feedback := range r.state.feedbacks {
-		if feedback.CreatedAt.Before(from) || !feedback.CreatedAt.Before(to) {
+		if !includeTrendFeedback(feedback, areaID, from, to) {
 			continue
 		}
-		if areaID != "" && feedback.AreaID != areaID {
-			continue
-		}
-		bucketTime := truncateBucket(feedback.CreatedAt, bucket)
+		bucketTime := truncateBucket(feedback.UpdatedAt, bucket)
 		key := feedback.AreaID + ":" + bucketTime.Format(time.RFC3339)
 		accumulator := groups[key]
 		if accumulator == nil {
-			accumulator = &trendAccumulator{point: domain.TrendPoint{Bucket: bucketTime, AreaID: feedback.AreaID}}
+			accumulator = &trendAccumulator{
+				point: domain.TrendPoint{
+					Bucket: bucketTime,
+					AreaID: feedback.AreaID,
+				},
+			}
 			groups[key] = accumulator
 		}
-		accumulator.point.Submitted++
-		if feedback.Status == domain.StatusClosed {
-			accumulator.point.Closed++
-			if feedback.ClosedAt != nil {
-				accumulator.closureHours += feedback.ClosedAt.Sub(feedback.CreatedAt).Hours()
-				accumulator.closedCount++
-			}
+		accumulateTrend(accumulator, feedback, r.state.satisfaction, to)
+	}
+	result := finishTrendGroups(groups)
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Bucket.Equal(result[j].Bucket) {
+			return result[i].AreaID < result[j].AreaID
 		}
-		if feedback.Status == domain.StatusRejected {
-			accumulator.point.Rejected++
-		}
-		if feedback.IsOverdue(to) {
-			accumulator.point.Overdue++
-		}
-		if satisfaction, exists := r.state.satisfaction[feedback.ID]; exists {
-			accumulator.scoreTotal += satisfaction.Score
-			accumulator.scoreCount++
+		return result[i].Bucket.Before(result[j].Bucket)
+	})
+	return result, nil
+}
+
+func includeTrendFeedback(feedback *domain.Feedback, areaID string, from, to time.Time) bool {
+	if feedback == nil {
+		return false
+	}
+	if areaID != "" && feedback.AreaID != areaID {
+		return false
+	}
+	return !feedback.UpdatedAt.Before(from) && feedback.UpdatedAt.Before(to)
+}
+
+func accumulateTrend(
+	accumulator *trendAccumulator,
+	feedback *domain.Feedback,
+	satisfaction map[string]domain.Satisfaction,
+	reportEnd time.Time,
+) {
+	accumulator.point.Submitted++
+	if feedback.Status == domain.StatusClosed {
+		accumulator.point.Closed++
+		if feedback.ClosedAt != nil {
+			accumulator.closureHours += feedback.ClosedAt.Sub(feedback.CreatedAt).Hours()
+			accumulator.closedCount++
 		}
 	}
+	if feedback.Status == domain.StatusRejected {
+		accumulator.point.Rejected++
+	}
+	if feedback.IsOverdue(reportEnd) {
+		accumulator.point.Overdue++
+	}
+	if score, exists := satisfaction[feedback.ID]; exists {
+		accumulator.scoreTotal += score.Score
+		accumulator.scoreCount++
+	}
+}
+
+func finishTrendGroups(groups map[string]*trendAccumulator) []domain.TrendPoint {
 	result := make([]domain.TrendPoint, 0, len(groups))
 	for _, accumulator := range groups {
 		if accumulator.closedCount > 0 {
@@ -109,13 +141,7 @@ func (r *repositoryView) Trend(ctx context.Context, areaID string, from, to time
 		}
 		result = append(result, accumulator.point)
 	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].Bucket.Equal(result[j].Bucket) {
-			return result[i].AreaID < result[j].AreaID
-		}
-		return result[i].Bucket.Before(result[j].Bucket)
-	})
-	return result, nil
+	return result
 }
 
 func truncateBucket(value time.Time, bucket string) time.Time {
