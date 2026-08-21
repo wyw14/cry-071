@@ -2,7 +2,9 @@ package application
 
 import (
 	"context"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/wyw14/cry-071/internal/domain"
 )
@@ -41,42 +43,27 @@ func (s *MergeService) Merge(ctx context.Context, cmd MergeCommand) (*domain.Mer
 	if err != nil {
 		return nil, err
 	}
-	err = s.deps.Transactions.WithinTransaction(ctx, func(tx context.Context, repos Repositories) error {
-		primary, err := repos.Get(tx, cmd.PrimaryID)
+	primary, err := s.deps.Repositories.Get(ctx, cmd.PrimaryID)
+	if err != nil {
+		return nil, err
+	}
+	if !cmd.Actor.CanManage(primary.AreaID) {
+		return nil, domain.ErrForbidden
+	}
+	primaryVersion := primary.Version
+	memberIDs := append([]string(nil), group.MemberIDs...)
+	sort.Strings(memberIDs)
+	for _, memberID := range memberIDs {
+		err := s.mergeOneMember(ctx, primary, memberID, cmd.MemberVersions[memberID], cmd, now)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if !cmd.Actor.CanManage(primary.AreaID) {
-			return domain.ErrForbidden
+		if err := primary.AddRelation(memberID, now); err != nil {
+			return nil, err
 		}
-		for _, memberID := range group.MemberIDs {
-			member, err := repos.Get(tx, memberID)
-			if err != nil {
-				return err
-			}
-			if member.AreaID != primary.AreaID {
-				return domain.ValidationError{Field: "member_ids", Message: "merged feedback must belong to the same public area"}
-			}
-			expected := cmd.MemberVersions[memberID]
-			if member.Version != expected {
-				return domain.ErrVersionConflict
-			}
-			if err := member.MarkMerged(primary.ID, now); err != nil {
-				return err
-			}
-			event := newTimelineEvent(s.deps.IDs, member, domain.EventMerged, cmd.Actor.ID, domain.VisibilityPublic,
-				"该反馈已合并处理", map[string]string{"primary_feedback_id": primary.ID, "reason": strings.TrimSpace(cmd.Reason)}, now)
-			if err := repos.Update(tx, member, expected); err != nil {
-				return err
-			}
-			if err := repos.Append(tx, event); err != nil {
-				return err
-			}
-			if err := primary.AddRelation(member.ID, now); err != nil {
-				return err
-			}
-		}
-		if err := repos.Update(tx, primary, primary.Version-int64(len(group.MemberIDs))); err != nil {
+	}
+	err = s.deps.Transactions.WithinTransaction(ctx, func(tx context.Context, repos Repositories) error {
+		if err := repos.Update(tx, primary, primaryVersion); err != nil {
 			return err
 		}
 		if err := repos.CreateMerge(tx, group); err != nil {
@@ -89,6 +76,51 @@ func (s *MergeService) Merge(ctx context.Context, cmd MergeCommand) (*domain.Mer
 		return nil, err
 	}
 	return group, nil
+}
+
+func (s *MergeService) mergeOneMember(
+	ctx context.Context,
+	primary *domain.Feedback,
+	memberID string,
+	expectedVersion int64,
+	cmd MergeCommand,
+	now time.Time,
+) error {
+	return s.deps.Transactions.WithinTransaction(ctx, func(tx context.Context, repos Repositories) error {
+		member, err := repos.Get(tx, memberID)
+		if err != nil {
+			return err
+		}
+		if member.AreaID != primary.AreaID {
+			return domain.ValidationError{
+				Field:   "member_ids",
+				Message: "merged feedback must belong to the same public area",
+			}
+		}
+		if member.Version != expectedVersion {
+			return domain.ErrVersionConflict
+		}
+		if err := member.MarkMerged(primary.ID, now); err != nil {
+			return err
+		}
+		event := newTimelineEvent(
+			s.deps.IDs,
+			member,
+			domain.EventMerged,
+			cmd.Actor.ID,
+			domain.VisibilityPublic,
+			"该反馈已合并处理",
+			map[string]string{
+				"primary_feedback_id": primary.ID,
+				"reason":              strings.TrimSpace(cmd.Reason),
+			},
+			now,
+		)
+		if err := repos.Update(tx, member, expectedVersion); err != nil {
+			return err
+		}
+		return repos.Append(tx, event)
+	})
 }
 
 func (s *MergeService) Relate(ctx context.Context, firstID string, firstVersion int64, secondID string, secondVersion int64, actor domain.Actor, requestID string) error {
