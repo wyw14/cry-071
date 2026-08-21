@@ -107,40 +107,63 @@ type AssignmentCommand struct {
 
 func (s *WorkflowService) Assign(ctx context.Context, cmd AssignmentCommand) (*domain.Feedback, error) {
 	now := s.deps.Clock.Now()
-	var result *domain.Feedback
-	err := s.deps.Transactions.WithinTransaction(ctx, func(tx context.Context, repos Repositories) error {
-		feedback, err := repos.Get(tx, cmd.FeedbackID)
-		if err != nil {
-			return err
-		}
-		if feedback.Version != cmd.ExpectedVersion {
-			return domain.ErrVersionConflict
-		}
-		previous := feedback.AssigneeID
-		if err := feedback.Assign(cmd.Actor, cmd.AssigneeID, now); err != nil {
-			return err
-		}
-		event := newTimelineEvent(s.deps.IDs, feedback, domain.EventTransferred, cmd.Actor.ID,
-			domain.VisibilityPublic, "处理人员已调整", map[string]string{
-				"previous_assignee": previous, "new_assignee": feedback.AssigneeID,
-			}, now)
-		if err := repos.Update(tx, feedback, cmd.ExpectedVersion); err != nil {
-			return err
-		}
-		if err := repos.Append(tx, event); err != nil {
-			return err
-		}
-		if err := repos.AppendAudit(tx, newAudit(s.deps.IDs, cmd.Actor.ID, "feedback.assign", "feedback",
-			feedback.ID, cmd.RequestID, map[string]string{"assignee_id": feedback.AssigneeID}, now)); err != nil {
-			return err
-		}
-		result = feedback.Clone()
-		return nil
-	})
+	feedback, err := s.deps.Repositories.Get(ctx, cmd.FeedbackID)
 	if err != nil {
 		return nil, err
 	}
-	_ = s.deps.Notifications.Send(ctx, Notification{Recipient: cmd.AssigneeID, Template: "feedback_assigned",
-		Data: map[string]string{"feedback_id": cmd.FeedbackID}, CreatedAt: now})
-	return result, nil
+	if feedback.Version != cmd.ExpectedVersion {
+		return nil, domain.ErrVersionConflict
+	}
+
+	previous := feedback.AssigneeID
+	if err := feedback.Assign(cmd.Actor, cmd.AssigneeID, now); err != nil {
+		return nil, err
+	}
+	if err := s.deps.Repositories.Update(ctx, feedback, cmd.ExpectedVersion); err != nil {
+		return nil, err
+	}
+
+	_ = s.deps.Notifications.Send(ctx, Notification{
+		Recipient: cmd.AssigneeID,
+		Template:  "feedback_assigned",
+		Data: map[string]string{
+			"feedback_id": cmd.FeedbackID,
+		},
+		CreatedAt: now,
+	})
+
+	event := newTimelineEvent(
+		s.deps.IDs,
+		feedback,
+		domain.EventTransferred,
+		cmd.Actor.ID,
+		domain.VisibilityPublic,
+		"处理人员已调整",
+		map[string]string{
+			"previous_assignee": previous,
+			"new_assignee":      feedback.AssigneeID,
+		},
+		now,
+	)
+	if err := s.deps.Repositories.Append(ctx, event); err != nil {
+		return nil, err
+	}
+	if err := s.deps.Repositories.Update(ctx, feedback, cmd.ExpectedVersion+1); err != nil {
+		return nil, err
+	}
+
+	audit := newAudit(
+		s.deps.IDs,
+		cmd.Actor.ID,
+		"feedback.assign",
+		"feedback",
+		feedback.ID,
+		cmd.RequestID,
+		map[string]string{"assignee_id": feedback.AssigneeID},
+		now,
+	)
+	if err := s.deps.Repositories.AppendAudit(ctx, audit); err != nil {
+		return nil, err
+	}
+	return feedback.Clone(), nil
 }
