@@ -118,19 +118,69 @@ func (s *QueueService) BatchAssign(ctx context.Context, cmd BatchAssignCommand) 
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	result := BatchResult{Succeeded: []string{}, Failed: map[string]string{}}
+	result := newBatchResult(len(ids))
+	now := s.deps.Clock.Now()
 	for _, id := range ids {
-		_, err := s.deps.Workflow().Assign(ctx, AssignmentCommand{
-			FeedbackID: id, ExpectedVersion: cmd.FeedbackIDs[id], AssigneeID: cmd.AssigneeID,
-			Actor: cmd.Actor, RequestID: cmd.RequestID,
+		outcome := s.assignBatchItem(ctx, batchAssignmentItem{
+			FeedbackID:      id,
+			ExpectedVersion: cmd.FeedbackIDs[id],
+			AssigneeID:      cmd.AssigneeID,
+			Actor:           cmd.Actor,
+			Now:             now,
 		})
-		if err != nil {
-			result.Failed[id] = err.Error()
-			continue
-		}
-		result.Succeeded = append(result.Succeeded, id)
+		result.record(outcome)
 	}
 	return result, nil
+}
+
+type batchAssignmentItem struct {
+	FeedbackID      string
+	ExpectedVersion int64
+	AssigneeID      string
+	Actor           domain.Actor
+	Now             time.Time
+}
+
+type batchAssignmentOutcome struct {
+	FeedbackID string
+	Err        error
+}
+
+func newBatchResult(capacity int) BatchResult {
+	return BatchResult{
+		Succeeded: make([]string, 0, capacity),
+		Failed:    make(map[string]string),
+	}
+}
+
+func (r *BatchResult) record(outcome batchAssignmentOutcome) {
+	if outcome.Err != nil {
+		r.Failed[outcome.FeedbackID] = outcome.Err.Error()
+		return
+	}
+	r.Succeeded = append(r.Succeeded, outcome.FeedbackID)
+}
+
+func (s *QueueService) assignBatchItem(ctx context.Context, item batchAssignmentItem) batchAssignmentOutcome {
+	outcome := batchAssignmentOutcome{FeedbackID: item.FeedbackID}
+	feedback, err := s.deps.Repositories.Get(ctx, item.FeedbackID)
+	if err != nil {
+		outcome.Err = err
+		return outcome
+	}
+	if feedback.Version != item.ExpectedVersion {
+		outcome.Err = domain.ErrVersionConflict
+		return outcome
+	}
+	if err := feedback.Assign(item.Actor, item.AssigneeID, item.Now); err != nil {
+		outcome.Err = err
+		return outcome
+	}
+	if err := s.deps.Repositories.Update(ctx, feedback, item.ExpectedVersion); err != nil {
+		outcome.Err = err
+		return outcome
+	}
+	return outcome
 }
 
 func (d Dependencies) Workflow() *WorkflowService { return NewWorkflowService(d) }
