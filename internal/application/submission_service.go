@@ -114,34 +114,15 @@ func (s *SubmissionService) Submit(ctx context.Context, cmd SubmitFeedbackComman
 	if err != nil {
 		return SubmissionResult{}, err
 	}
+	if err := s.persistAcceptedFeedback(ctx, feedback, cmd, idempotencyKey, hash, now); err != nil {
+		return SubmissionResult{}, err
+	}
+
 	plainToken, tokenDigest, err := s.deps.Tokens.Issue(feedback.ID, now.Add(180*24*time.Hour))
 	if err != nil {
 		return SubmissionResult{}, err
 	}
-	event := newTimelineEvent(s.deps.IDs, feedback, domain.EventSubmitted, feedback.SubmitterID,
-		domain.VisibilityPublic, "反馈已提交，等待受理", map[string]string{
-			"acceptance_number": feedback.AcceptanceNumber,
-			"priority":          string(feedback.Priority),
-		}, now)
-	audit := newAudit(s.deps.IDs, feedback.SubmitterID, "feedback.submit", "feedback", feedback.ID,
-		cmd.RequestID, map[string]string{"area_id": feedback.AreaID, "anonymous": boolText(feedback.Anonymous)}, now)
-	if err := s.deps.Transactions.WithinTransaction(ctx, func(tx context.Context, repos Repositories) error {
-		if err := repos.Create(tx, feedback); err != nil {
-			return err
-		}
-		if err := repos.Append(tx, event); err != nil {
-			return err
-		}
-		if err := repos.SaveToken(tx, tokenDigest, feedback.ID, now.Add(180*24*time.Hour)); err != nil {
-			return err
-		}
-		if idempotencyKey != "" {
-			if err := repos.SaveIdempotency(tx, "feedback.submit", idempotencyKey, hash, feedback.ID, now.Add(24*time.Hour)); err != nil {
-				return err
-			}
-		}
-		return repos.AppendAudit(tx, audit)
-	}); err != nil {
+	if err := s.activateQueryToken(ctx, feedback.ID, tokenDigest, now); err != nil {
 		return SubmissionResult{}, err
 	}
 	if feedback.SubmitterContact != "" {
@@ -155,6 +136,62 @@ func (s *SubmissionService) Submit(ctx context.Context, cmd SubmitFeedbackComman
 		candidates, _ = s.deps.Duplicates.Find(ctx, feedback, 5)
 	}
 	return SubmissionResult{Feedback: feedback.Clone(), QueryToken: plainToken, DuplicateCandidates: candidates}, nil
+}
+
+func (s *SubmissionService) persistAcceptedFeedback(
+	ctx context.Context,
+	feedback *domain.Feedback,
+	cmd SubmitFeedbackCommand,
+	idempotencyKey string,
+	requestDigest string,
+	now time.Time,
+) error {
+	event := newTimelineEvent(
+		s.deps.IDs,
+		feedback,
+		domain.EventSubmitted,
+		feedback.SubmitterID,
+		domain.VisibilityPublic,
+		"反馈已提交，等待受理",
+		map[string]string{
+			"acceptance_number": feedback.AcceptanceNumber,
+			"priority":          string(feedback.Priority),
+		},
+		now,
+	)
+	audit := newAudit(
+		s.deps.IDs,
+		feedback.SubmitterID,
+		"feedback.submit",
+		"feedback",
+		feedback.ID,
+		cmd.RequestID,
+		map[string]string{
+			"area_id":   feedback.AreaID,
+			"anonymous": boolText(feedback.Anonymous),
+		},
+		now,
+	)
+	return s.deps.Transactions.WithinTransaction(ctx, func(tx context.Context, repos Repositories) error {
+		if err := repos.Create(tx, feedback); err != nil {
+			return err
+		}
+		if err := repos.Append(tx, event); err != nil {
+			return err
+		}
+		if idempotencyKey != "" {
+			if err := repos.SaveIdempotency(tx, "feedback.submit", idempotencyKey, requestDigest, feedback.ID, now.Add(24*time.Hour)); err != nil {
+				return err
+			}
+		}
+		return repos.AppendAudit(tx, audit)
+	})
+}
+
+func (s *SubmissionService) activateQueryToken(ctx context.Context, feedbackID, tokenDigest string, now time.Time) error {
+	return s.deps.Transactions.WithinTransaction(ctx, func(tx context.Context, repos Repositories) error {
+		return repos.SaveToken(tx, tokenDigest, feedbackID, now.Add(180*24*time.Hour))
+	})
 }
 
 func (s *SubmissionService) replaySubmission(ctx context.Context, feedbackID string, now time.Time) (SubmissionResult, error) {
