@@ -194,33 +194,63 @@ type PublicFeedbackView struct {
 }
 
 func (s *SubmissionService) ViewByToken(ctx context.Context, plainToken string) (PublicFeedbackView, error) {
+	readContext := context.Background()
+	feedback, err := s.resolvePublicFeedback(readContext, plainToken)
+	if err != nil {
+		return PublicFeedbackView{}, err
+	}
+	materials, err := s.loadPublicMaterials(readContext, feedback.ID)
+	if err != nil {
+		return PublicFeedbackView{}, err
+	}
+	return s.buildPublicView(feedback, materials), nil
+}
+
+type publicFeedbackMaterials struct {
+	timeline     []domain.TimelineEvent
+	replies      []domain.Reply
+	attachments  []domain.Attachment
+	satisfaction *domain.Satisfaction
+}
+
+func (s *SubmissionService) resolvePublicFeedback(ctx context.Context, plainToken string) (*domain.Feedback, error) {
 	digest := s.deps.Tokens.Digest(strings.TrimSpace(plainToken))
 	feedbackID, err := s.deps.Repositories.ResolveToken(ctx, digest)
 	if err != nil {
-		return PublicFeedbackView{}, err
+		return nil, err
 	}
 	feedback, err := s.deps.Repositories.Get(ctx, feedbackID)
 	if err != nil {
-		return PublicFeedbackView{}, err
+		return nil, err
 	}
-	timeline, err := s.deps.Repositories.ListTimeline(ctx, feedbackID)
+	return feedback, nil
+}
+
+func (s *SubmissionService) loadPublicMaterials(ctx context.Context, feedbackID string) (publicFeedbackMaterials, error) {
+	result := publicFeedbackMaterials{}
+	var err error
+	result.timeline, err = s.deps.Repositories.ListTimeline(ctx, feedbackID)
 	if err != nil {
-		return PublicFeedbackView{}, err
+		return publicFeedbackMaterials{}, err
 	}
-	replies, err := s.deps.Repositories.ListReplies(ctx, feedbackID)
+	result.replies, err = s.deps.Repositories.ListReplies(ctx, feedbackID)
 	if err != nil {
-		return PublicFeedbackView{}, err
+		return publicFeedbackMaterials{}, err
 	}
-	attachments, err := s.deps.Repositories.ListAttachments(ctx, feedbackID)
+	result.attachments, err = s.deps.Repositories.ListAttachments(ctx, feedbackID)
 	if err != nil {
-		return PublicFeedbackView{}, err
+		return publicFeedbackMaterials{}, err
 	}
-	satisfaction, err := s.deps.Repositories.GetSatisfaction(ctx, feedbackID)
+	result.satisfaction, err = s.deps.Repositories.GetSatisfaction(ctx, feedbackID)
 	if err == domain.ErrNotFound {
-		satisfaction = nil
+		result.satisfaction = nil
 	} else if err != nil {
-		return PublicFeedbackView{}, err
+		return publicFeedbackMaterials{}, err
 	}
+	return result, nil
+}
+
+func (s *SubmissionService) buildPublicView(feedback *domain.Feedback, materials publicFeedbackMaterials) PublicFeedbackView {
 	redacted := feedback.Clone()
 	redacted.Description = s.deps.Redactor.Text(redacted.Description)
 	redacted.SubmitterContact = s.deps.Redactor.Contact(redacted.SubmitterContact)
@@ -228,15 +258,18 @@ func (s *SubmissionService) ViewByToken(ctx context.Context, plainToken string) 
 		redacted.SubmitterID = ""
 		redacted.SubmitterName = "匿名提交者"
 	}
-	publicReplies := make([]domain.Reply, 0, len(replies))
-	for _, reply := range replies {
+	publicReplies := make([]domain.Reply, 0, len(materials.replies))
+	for _, reply := range materials.replies {
 		if reply.Public {
 			reply.Content = s.deps.Redactor.Text(reply.Content)
 			publicReplies = append(publicReplies, reply)
 		}
 	}
 	return PublicFeedbackView{
-		Feedback: redacted, Timeline: domain.PublicTimeline(timeline), Replies: publicReplies,
-		Attachments: attachments, Satisfaction: satisfaction,
-	}, nil
+		Feedback:     redacted,
+		Timeline:     domain.PublicTimeline(materials.timeline),
+		Replies:      publicReplies,
+		Attachments:  append([]domain.Attachment(nil), materials.attachments...),
+		Satisfaction: materials.satisfaction,
+	}
 }
