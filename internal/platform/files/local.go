@@ -36,36 +36,36 @@ func (s *LocalStore) Put(ctx context.Context, key string, reader io.Reader, expe
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return "", "", err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".upload-*")
+	object, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
 	if err != nil {
 		return "", "", err
 	}
-	temporaryName := temporary.Name()
-	committed := false
+	closed := false
 	defer func() {
-		_ = temporary.Close()
-		if !committed {
-			_ = os.Remove(temporaryName)
+		if !closed {
+			_ = object.Close()
 		}
 	}()
+
 	hasher := sha256.New()
-	written, err := copyContext(ctx, io.MultiWriter(temporary, hasher), reader, expectedSize+1)
-	if err != nil {
-		return "", "", err
+	limited := io.LimitReader(reader, expectedSize+1)
+	written, copyErr := io.Copy(io.MultiWriter(object, hasher), limited)
+	if copyErr != nil {
+		return "", "", copyErr
 	}
 	if written != expectedSize {
 		return "", "", fmt.Errorf("attachment size mismatch: expected %d, got %d", expectedSize, written)
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := object.Sync(); err != nil {
 		return "", "", err
 	}
-	if err := temporary.Close(); err != nil {
+	if err := object.Close(); err != nil {
 		return "", "", err
 	}
-	if err := os.Rename(temporaryName, path); err != nil {
+	closed = true
+	if err := ctx.Err(); err != nil {
 		return "", "", err
 	}
-	committed = true
 	return key, hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
@@ -105,32 +105,4 @@ func (s *LocalStore) path(key string) (string, error) {
 		return "", fmt.Errorf("storage key escapes root")
 	}
 	return path, nil
-}
-
-func copyContext(ctx context.Context, writer io.Writer, reader io.Reader, limit int64) (int64, error) {
-	buffer := make([]byte, 32*1024)
-	limited := io.LimitReader(reader, limit)
-	var total int64
-	for {
-		if err := ctx.Err(); err != nil {
-			return total, err
-		}
-		read, readErr := limited.Read(buffer)
-		if read > 0 {
-			written, writeErr := writer.Write(buffer[:read])
-			total += int64(written)
-			if writeErr != nil {
-				return total, writeErr
-			}
-			if written != read {
-				return total, io.ErrShortWrite
-			}
-		}
-		if readErr == io.EOF {
-			return total, nil
-		}
-		if readErr != nil {
-			return total, readErr
-		}
-	}
 }
