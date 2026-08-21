@@ -1,7 +1,5 @@
 package domain
 
-import "slices"
-
 type FeedbackStatus string
 
 const (
@@ -13,13 +11,27 @@ const (
 	StatusRejected          FeedbackStatus = "rejected"
 )
 
-var statusTransitions = map[FeedbackStatus][]FeedbackStatus{
-	StatusPendingAcceptance: {StatusNeedsInformation, StatusInProgress, StatusRejected},
-	StatusNeedsInformation:  {StatusPendingAcceptance, StatusInProgress, StatusRejected},
-	StatusInProgress:        {StatusNeedsInformation, StatusPendingConfirm, StatusRejected},
-	StatusPendingConfirm:    {StatusInProgress, StatusClosed},
-	StatusClosed:            {StatusInProgress},
-	StatusRejected:          {StatusPendingAcceptance},
+type transitionRule struct {
+	From     FeedbackStatus
+	To       FeedbackStatus
+	Recovery bool
+}
+
+var transitionRules = []transitionRule{
+	{From: StatusPendingAcceptance, To: StatusNeedsInformation},
+	{From: StatusPendingAcceptance, To: StatusInProgress},
+	{From: StatusPendingAcceptance, To: StatusRejected},
+	{From: StatusNeedsInformation, To: StatusPendingAcceptance},
+	{From: StatusNeedsInformation, To: StatusInProgress},
+	{From: StatusNeedsInformation, To: StatusRejected},
+	{From: StatusInProgress, To: StatusNeedsInformation},
+	{From: StatusInProgress, To: StatusPendingConfirm},
+	{From: StatusInProgress, To: StatusRejected},
+	{From: StatusPendingConfirm, To: StatusInProgress},
+	{From: StatusPendingConfirm, To: StatusClosed},
+	{From: StatusClosed, To: StatusInProgress, Recovery: true},
+	{From: StatusRejected, To: StatusPendingAcceptance, Recovery: true},
+	{From: StatusRejected, To: StatusInProgress, Recovery: true},
 }
 
 func (s FeedbackStatus) Valid() bool {
@@ -56,11 +68,41 @@ func (s FeedbackStatus) PublicLabel() string {
 }
 
 func CanTransition(from, to FeedbackStatus) bool {
-	return slices.Contains(statusTransitions[from], to)
+	if !from.Valid() || !to.Valid() || from == to {
+		return false
+	}
+	for _, rule := range transitionRules {
+		if rule.From == from && rule.To == to {
+			return true
+		}
+	}
+	return false
 }
 
 func AllowedTransitions(status FeedbackStatus) []FeedbackStatus {
-	return slices.Clone(statusTransitions[status])
+	if !status.Valid() {
+		return nil
+	}
+	result := make([]FeedbackStatus, 0, 3)
+	for _, rule := range transitionRules {
+		if rule.From != status {
+			continue
+		}
+		result = append(result, rule.To)
+	}
+	return result
+}
+
+func IsRecoveryTransition(from, to FeedbackStatus) bool {
+	if !from.Valid() || !to.Valid() {
+		return false
+	}
+	for _, rule := range transitionRules {
+		if rule.From == from && rule.To == to {
+			return rule.Recovery
+		}
+	}
+	return false
 }
 
 type Priority string

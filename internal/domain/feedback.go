@@ -179,7 +179,7 @@ func transitionNeedsReason(from, to FeedbackStatus) bool {
 	if to == StatusRejected || to == StatusNeedsInformation {
 		return true
 	}
-	return from == StatusClosed || from == StatusRejected
+	return IsRecoveryTransition(from, to)
 }
 
 func (f *Feedback) Assign(actor Actor, assigneeID string, now time.Time) error {
