@@ -17,6 +17,7 @@ paths:
             schema: { $ref: '#/components/schemas/SubmitFeedback' }
       responses:
         '201': { description: 已生成受理编号与查询令牌 }
+        '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
   /feedback/query/{token}:
     get:
@@ -138,5 +139,5 @@ components:
       description: 查询令牌或身份无效
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
     Conflict:
-      description: 乐观版本或唯一键冲突
+      description: 乐观版本或唯一键冲突，含复用相同幂等键但请求内容不一致的情形
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }

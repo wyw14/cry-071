@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -25,6 +26,7 @@ func respond(c *gin.Context, status int, data any) { c.JSON(status, gin.H{"data"
 
 func respondError(c *gin.Context, err error) {
 	presentation := classifyError(err)
+	middleware.ReportError(c, err, presentation.status, presentation.code)
 	body := ErrorBody{
 		Code:        presentation.code,
 		Message:     presentation.message,
@@ -48,51 +50,57 @@ func classifyError(err error) errorPresentation {
 		message: "服务暂时不可用",
 		fields:  []FieldError{},
 	}
-	switch err {
-	case domain.ErrNotFound:
+	// errors.Is unwraps nested domain errors, so wrapped sentinels such as
+	// ConflictError (-> ErrConflict) and StateError (-> ErrInvalidTransition)
+	// map to the same stable code as their sentinel instead of falling through
+	// to the generic 500 response.
+	switch {
+	case errors.Is(err, domain.ErrNotFound):
 		presentation.status = http.StatusNotFound
 		presentation.code = "not_found"
 		presentation.message = "请求的资源不存在"
-	case domain.ErrForbidden:
+	case errors.Is(err, domain.ErrForbidden):
 		presentation.status = http.StatusForbidden
 		presentation.code = "permission_denied"
 		presentation.message = "当前身份没有操作权限"
-	case domain.ErrTokenInvalid:
+	case errors.Is(err, domain.ErrTokenInvalid):
 		presentation.status = http.StatusUnauthorized
 		presentation.code = "query_token_invalid"
 		presentation.message = "查询令牌无效或已过期"
-	case domain.ErrVersionConflict:
+	case errors.Is(err, domain.ErrVersionConflict):
 		presentation.status = http.StatusConflict
 		presentation.code = "version_conflict"
 		presentation.message = "数据已被其他操作更新，请刷新后重试"
-	case domain.ErrConflict:
+	case errors.Is(err, domain.ErrConflict):
 		presentation.status = http.StatusConflict
 		presentation.code = "conflict"
 		presentation.message = "当前操作与已有数据冲突"
-	case domain.ErrInvalidTransition:
+	case errors.Is(err, domain.ErrInvalidTransition):
 		presentation.status = http.StatusUnprocessableEntity
 		presentation.code = "invalid_transition"
 		presentation.message = "当前状态不允许该操作"
-	case domain.ErrInvalidArgument:
+	case errors.Is(err, domain.ErrInvalidArgument):
 		presentation.status = http.StatusUnprocessableEntity
 		presentation.code = "invalid_argument"
 		presentation.message = "请求参数不正确"
 	}
 
-	switch typed := err.(type) {
-	case domain.ValidationError:
+	var validationErr domain.ValidationError
+	if errors.As(err, &validationErr) {
 		presentation.status = http.StatusUnprocessableEntity
 		presentation.code = "validation_failed"
 		presentation.message = "请求内容未通过校验"
 		presentation.fields = append(presentation.fields, FieldError{
-			Field:   typed.Field,
-			Message: typed.Message,
+			Field:   validationErr.Field,
+			Message: validationErr.Message,
 		})
-	case validator.ValidationErrors:
+	}
+	var validatorErrs validator.ValidationErrors
+	if errors.As(err, &validatorErrs) {
 		presentation.status = http.StatusUnprocessableEntity
 		presentation.code = "validation_failed"
 		presentation.message = "请求内容未通过校验"
-		for _, item := range typed {
+		for _, item := range validatorErrs {
 			presentation.fields = append(presentation.fields, FieldError{
 				Field:   item.Field(),
 				Message: validationMessage(item),
