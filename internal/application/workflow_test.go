@@ -164,6 +164,61 @@ func TestWorkflowProducesImmutablePublicTimelineAndHidesInternalNote(t *testing.
 	}
 }
 
+// TestPublicViewCannotRewriteSavedTimelineHistory reproduces a caller mutating the
+// Details of the timeline handed out for display and those edits leaking back
+// into the saved history for the next query on the same acceptance number.
+func TestPublicViewCannotRewriteSavedTimelineHistory(t *testing.T) {
+	system := newTestSystem(t)
+	submitted := submitFixture(t, system, "公园东门路灯反复闪烁", "中心公园东门")
+
+	// A caller (e.g. a presentation layer) tweaks the returned timeline details.
+	first, err := system.services.Submission.ViewByToken(context.Background(), submitted.QueryToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Timeline) == 0 {
+		t.Fatal("expected at least one timeline event")
+	}
+	for _, event := range first.Timeline {
+		if event.Details == nil {
+			event.Details = map[string]string{}
+		}
+		event.Details["display_override"] = "临时改写"
+		event.Summary = "被调用方改写的摘要"
+	}
+
+	// Re-querying the same acceptance number must not surface the edits.
+	second, err := system.services.Submission.ViewByToken(context.Background(), submitted.QueryToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Timeline) != len(first.Timeline) {
+		t.Fatalf("timeline length changed between queries: first=%d second=%d", len(first.Timeline), len(second.Timeline))
+	}
+	for index, event := range second.Timeline {
+		if event.Summary == "被调用方改写的摘要" {
+			t.Fatalf("query rewrote saved timeline summary at index %d", index)
+		}
+		if _, leaked := event.Details["display_override"]; leaked {
+			t.Fatalf("query leaked display-only detail edit into saved history at index %d", index)
+		}
+	}
+
+	// The persisted (full, staff-visible) timeline must also be untouched.
+	saved, err := system.store.ListTimeline(context.Background(), submitted.Feedback.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range saved {
+		if event.Summary == "被调用方改写的摘要" {
+			t.Fatalf("saved timeline summary was rewritten: %#v", event)
+		}
+		if _, leaked := event.Details["display_override"]; leaked {
+			t.Fatalf("saved timeline detail was rewritten: %#v", event)
+		}
+	}
+}
+
 func TestMergeAndAnnouncementLinkRelatedFeedback(t *testing.T) {
 	system := newTestSystem(t)
 	primary := submitFixture(t, system, "中心广场两盏路灯熄灭", "中心广场北侧")

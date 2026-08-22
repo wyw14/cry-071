@@ -20,18 +20,7 @@ func (r *repositoryView) Append(ctx context.Context, event domain.TimelineEvent)
 	if len(events) > 0 && events[len(events)-1].Sequence >= event.Sequence {
 		return domain.ConflictError{Resource: "timeline sequence", Key: event.FeedbackID}
 	}
-	stored := domain.TimelineEvent{
-		ID:         event.ID,
-		FeedbackID: event.FeedbackID,
-		Sequence:   event.Sequence,
-		Kind:       event.Kind,
-		ActorID:    event.ActorID,
-		Visibility: event.Visibility,
-		Summary:    event.Summary,
-		Details:    event.Details,
-		OccurredAt: event.OccurredAt,
-	}
-	r.state.timeline[event.FeedbackID] = append(events, stored)
+	r.state.timeline[event.FeedbackID] = append(events, event.Clone())
 	return nil
 }
 

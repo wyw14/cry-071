@@ -58,15 +58,22 @@ func (e TimelineEvent) Validate() error {
 	return nil
 }
 
+// Clone returns a deep copy of the event so that callers cannot mutate a saved
+// timeline entry through a value handed out for display. The Details map is the
+// only reference field and must be copied by value, not shared.
+func (e TimelineEvent) Clone() TimelineEvent {
+	clone := e
+	clone.Details = cloneStringMap(e.Details)
+	return clone
+}
+
 func PublicTimeline(events []TimelineEvent) []TimelineEvent {
 	public := make([]TimelineEvent, 0, len(events))
 	for _, event := range events {
 		if event.Visibility != VisibilityPublic {
 			continue
 		}
-		copyEvent := event
-		copyEvent.Details = cloneStringMap(event.Details)
-		public = append(public, copyEvent)
+		public = append(public, event.Clone())
 	}
 	return public
 }

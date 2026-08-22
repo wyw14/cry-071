@@ -194,30 +194,7 @@ type PublicFeedbackView struct {
 }
 
 func publicTimelineView(events []domain.TimelineEvent) []domain.TimelineEvent {
-	visibleCount := 0
-	for _, event := range events {
-		if event.Visibility == domain.VisibilityPublic {
-			visibleCount++
-		}
-	}
-	view := make([]domain.TimelineEvent, 0, visibleCount)
-	for _, event := range events {
-		if event.Visibility != domain.VisibilityPublic {
-			continue
-		}
-		view = append(view, domain.TimelineEvent{
-			ID:         event.ID,
-			FeedbackID: event.FeedbackID,
-			Sequence:   event.Sequence,
-			Kind:       event.Kind,
-			ActorID:    event.ActorID,
-			Visibility: event.Visibility,
-			Summary:    event.Summary,
-			Details:    event.Details,
-			OccurredAt: event.OccurredAt,
-		})
-	}
-	return view
+	return domain.PublicTimeline(events)
 }
 
 func (s *SubmissionService) ViewByToken(ctx context.Context, plainToken string) (PublicFeedbackView, error) {
