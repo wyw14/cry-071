@@ -31,7 +31,6 @@ var transitionRules = []transitionRule{
 	{From: StatusPendingConfirm, To: StatusClosed},
 	{From: StatusClosed, To: StatusInProgress, Recovery: true},
 	{From: StatusRejected, To: StatusPendingAcceptance, Recovery: true},
-	{From: StatusRejected, To: StatusInProgress, Recovery: true},
 }
 
 func (s FeedbackStatus) Valid() bool {
